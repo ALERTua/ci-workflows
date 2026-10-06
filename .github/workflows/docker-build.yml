@@ -9,7 +9,7 @@ name: Docker build
 # Caller:
 #   jobs:
 #     build:
-#       uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v2.0.0
+#       uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v3.0.0
 #       permissions:
 #         contents: read
 #         packages: write
@@ -46,19 +46,12 @@ on:
         description: Build on buildkit of alert-server when it answers. False always builds on the GitHub-hosted runner.
         type: boolean
         default: true
-      pr-comment:
-        description: >-
-          Comment the build result on the open pull request of the branch.
-          The caller job must then give pull-requests write.
-        type: boolean
-        default: false
     outputs:
       builder:
         description: Where the image was built, alert-server or github
         value: ${{ jobs.build.outputs.builder }}
 
-# No workflow-level permissions: the comment job takes the permissions of the caller job.
-# Each other job sets its own permissions.
+permissions: {}
 
 env:
   # Tailscale workload identity federation: identifiers, not secrets
@@ -214,36 +207,24 @@ jobs:
           echo "seconds=$seconds" >> "$GITHUB_OUTPUT"
           echo "Build step: ${seconds} s" >> "$GITHUB_STEP_SUMMARY"
 
-  # The comment tells the people and the tools that follow the pull request that the build ended.
-  # The job has no permissions block on purpose: it takes the permissions of the caller job, so only a caller
-  # with pr-comment gives pull-requests write. GitHub checks a permissions block before the if condition,
-  # and a block here would make each caller give pull-requests write.
-  comment:  # zizmor: ignore[excessive-permissions]
-    name: Comment the build result
-    needs: build
-    if: always() && inputs.pr-comment
-    runs-on: ubuntu-latest
-    steps:
-      - name: Comment the build result on the open pull request of the branch
-        # a failed comment must not fail a good build
-        continue-on-error: true
+      # pr-report.yml reads these files after all builds of the run and comments one summary
+      - name: Write the build result
+        if: always()
         env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          BRANCH: ${{ github.head_ref || github.ref_name }}
           TARGET: ${{ inputs.target || 'default' }}
-          RESULT: ${{ needs.build.result }}
-          BUILDER: ${{ needs.build.outputs.builder }}
-          SECONDS_SPENT: ${{ needs.build.outputs.seconds }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          OUTCOME: ${{ steps.build.outcome }}
+          BUILDER: ${{ steps.result.outputs.builder }}
+          SECONDS_SPENT: ${{ steps.duration.outputs.seconds }}
         run: |
-          pr="$PR_NUMBER"
-          if [ -z "$pr" ]; then
-            pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
-          fi
-          if [ -z "$pr" ]; then
-            echo "No open pull request for $BRANCH, no comment"
-            exit 0
-          fi
-          gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" \
-            --body "Docker build \`$TARGET\`: $RESULT on ${BUILDER:-?}, build step ${SECONDS_SPENT:-?} s. [Run]($RUN_URL)"
+          mkdir -p "$RUNNER_TEMP/build-result"
+          jq -n --arg target "$TARGET" --arg outcome "$OUTCOME" --arg builder "$BUILDER" --arg seconds "$SECONDS_SPENT" \
+            '{target: $target, outcome: $outcome, builder: $builder, seconds: $seconds}' > "$RUNNER_TEMP/build-result/result.json"
+
+      - name: Keep the build result for the report
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-result-${{ inputs.target || 'default' }}
+          path: ${{ runner.temp }}/build-result/result.json
+          retention-days: 1

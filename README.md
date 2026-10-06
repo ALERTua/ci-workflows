@@ -32,7 +32,7 @@ concurrency:
 
 jobs:
   build:
-    uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v2.0.0
+    uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v3.0.0
     permissions:
       contents: read
       packages: write
@@ -51,7 +51,7 @@ jobs:
             suffix: ""
           - target: cuda
             suffix: "-cuda"
-    uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v2.0.0
+    uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v3.0.0
     permissions:
       contents: read
       packages: write
@@ -72,26 +72,33 @@ jobs:
 | `latest-on-default-branch` | `true` | Tag each push to the default branch as `latest`. A release tag always gets `latest`. |
 | `context` | `.` | Build context path |
 | `alert-server` | `true` | Build on buildkit of alert-server when it answers. `false` always builds on the GitHub-hosted runner. |
-| `pr-comment` | `false` | Comment the build result on the open pull request of the branch. The caller job must then give `pull-requests: write`. |
 
-The output `builder` is `alert-server` or `github`.
+The output `builder` is `alert-server` or `github`. Each build also keeps its result as the artifact `build-result-<target>` for one day.
 
-With `pr-comment: true`, a separate job comments the build result on the open pull request of the branch, for example `Docker build cpu: success on alert-server, build step 14 s`. A tool that follows the pull request then learns that the build ended:
+## pr-report
+
+`pr-report.yml` comments one summary of all `docker-build.yml` builds of the run on the open pull request of the branch. A tool that follows the pull request then learns that all builds ended. Call it after the build jobs:
 
 ```yaml
 jobs:
   build:
-    uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v2.0.0
+    # the build job or the matrix of build jobs, as above
+  report:
+    needs: build
+    if: always()
+    uses: ALERTua/ci-workflows/.github/workflows/pr-report.yml@v3.0.0
     permissions:
-      contents: read
-      packages: write
-      id-token: write
       pull-requests: write
-    with:
-      pr-comment: true
 ```
 
-The comment job has no `permissions` block, so it takes the permissions of the caller job. GitHub checks a `permissions` block before the `if` condition of the job, so a block there would make each caller give `pull-requests: write`, also without the comment.
+The comment looks like this:
+
+| Target | Result | Builder | Build step |
+|---|---|---|---|
+| `cpu` | success | alert-server | 13 s |
+| `cuda` | success | alert-server | 14 s |
+
+A run on a branch without an open pull request gets no comment.
 
 Tags of the image: the branch name, the git tag name, and for a semantic version tag `1.2.3`, `1.2` and `1`. A pull request run builds the image but does not push it.
 
