@@ -46,19 +46,19 @@ on:
         description: Build on buildkit of alert-server when it answers. False always builds on the GitHub-hosted runner.
         type: boolean
         default: true
-    secrets:
-      pr-comment-token:
+      pr-comment:
         description: >-
-          GITHUB_TOKEN of the caller with pull-requests write. When given, the job comments the build result
-          on the open pull request of the branch. A secret, not an input, because GitHub checks the permissions
-          of a job before its if condition, so a caller without this comment must not need pull-requests write.
-        required: false
+          Comment the build result on the open pull request of the branch.
+          The caller job must then give pull-requests write.
+        type: boolean
+        default: false
     outputs:
       builder:
         description: Where the image was built, alert-server or github
         value: ${{ jobs.build.outputs.builder }}
 
-permissions: {}
+# No workflow-level permissions: the comment job takes the permissions of the caller job.
+# Each other job sets its own permissions.
 
 env:
   # Tailscale workload identity federation: identifiers, not secrets
@@ -78,6 +78,7 @@ jobs:
       id-token: write # Tailscale accepts the GitHub OIDC token instead of a key
     outputs:
       builder: ${{ steps.result.outputs.builder }}
+      seconds: ${{ steps.duration.outputs.seconds }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -203,27 +204,39 @@ jobs:
           cache-from: ${{ steps.result.outputs.cache-from }}
           cache-to: ${{ steps.result.outputs.cache-to }}
 
-      # The comment tells the people and the tools that follow the pull request that the build ended.
-      # A push to a branch without an open pull request gets no comment.
-      - name: Comment the build result on the pull request
+      - name: Record the duration of the build
+        id: duration
         if: always() && steps.start.outcome == 'success'
+        env:
+          START: ${{ steps.start.outputs.epoch }}
+        run: |
+          seconds=$(( $(date +%s) - START ))
+          echo "seconds=$seconds" >> "$GITHUB_OUTPUT"
+          echo "Build step: ${seconds} s" >> "$GITHUB_STEP_SUMMARY"
+
+  # The comment tells the people and the tools that follow the pull request that the build ended.
+  # The job has no permissions block on purpose: it takes the permissions of the caller job, so only a caller
+  # with pr-comment gives pull-requests write. GitHub checks a permissions block before the if condition,
+  # and a block here would make each caller give pull-requests write.
+  comment:  # zizmor: ignore[excessive-permissions]
+    name: Comment the build result
+    needs: build
+    if: always() && inputs.pr-comment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment the build result on the open pull request of the branch
+        # a failed comment must not fail a good build
         continue-on-error: true
         env:
-          GH_TOKEN: ${{ secrets.pr-comment-token }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BRANCH: ${{ github.head_ref || github.ref_name }}
           TARGET: ${{ inputs.target || 'default' }}
-          OUTCOME: ${{ steps.build.outcome }}
-          BUILDER: ${{ steps.result.outputs.builder }}
-          START: ${{ steps.start.outputs.epoch }}
+          RESULT: ${{ needs.build.result }}
+          BUILDER: ${{ needs.build.outputs.builder }}
+          SECONDS_SPENT: ${{ needs.build.outputs.seconds }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          seconds=$(( $(date +%s) - START ))
-          echo "Build step: ${seconds} s" >> "$GITHUB_STEP_SUMMARY"
-          if [ -z "$GH_TOKEN" ]; then
-            echo "The caller gives no pr-comment-token, no comment"
-            exit 0
-          fi
           pr="$PR_NUMBER"
           if [ -z "$pr" ]; then
             pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
@@ -233,4 +246,4 @@ jobs:
             exit 0
           fi
           gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" \
-            --body "Docker build \`$TARGET\`: $OUTCOME on $BUILDER, build step $seconds s. [Run]($RUN_URL)"
+            --body "Docker build \`$TARGET\`: $RESULT on ${BUILDER:-?}, build step ${SECONDS_SPENT:-?} s. [Run]($RUN_URL)"

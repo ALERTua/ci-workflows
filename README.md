@@ -72,10 +72,11 @@ jobs:
 | `latest-on-default-branch` | `true` | Tag each push to the default branch as `latest`. A release tag always gets `latest`. |
 | `context` | `.` | Build context path |
 | `alert-server` | `true` | Build on buildkit of alert-server when it answers. `false` always builds on the GitHub-hosted runner. |
+| `pr-comment` | `false` | Comment the build result on the open pull request of the branch. The caller job must then give `pull-requests: write`. |
 
 The output `builder` is `alert-server` or `github`.
 
-The optional secret `pr-comment-token` turns on a comment with the build result on the open pull request of the branch, for example `Docker build cpu: success on alert-server, build step 14 s`. A tool that follows the pull request then learns that the build ended. Without the secret, the workflow writes no comment. The caller passes its own token and gives it `pull-requests: write`:
+With `pr-comment: true`, a separate job comments the build result on the open pull request of the branch, for example `Docker build cpu: success on alert-server, build step 14 s`. A tool that follows the pull request then learns that the build ended:
 
 ```yaml
 jobs:
@@ -86,11 +87,11 @@ jobs:
       packages: write
       id-token: write
       pull-requests: write
-    secrets:
-      pr-comment-token: ${{ secrets.GITHUB_TOKEN }}
+    with:
+      pr-comment: true
 ```
 
-The comment is a secret and not an input, because GitHub checks the permissions of a job before its `if` condition. A caller without the comment then needs no `pull-requests: write`.
+The comment job has no `permissions` block, so it takes the permissions of the caller job. GitHub checks a `permissions` block before the `if` condition of the job, so a block there would make each caller give `pull-requests: write`, also without the comment.
 
 Tags of the image: the branch name, the git tag name, and for a semantic version tag `1.2.3`, `1.2` and `1`. A pull request run builds the image but does not push it.
 
