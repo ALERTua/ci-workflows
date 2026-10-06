@@ -10,14 +10,14 @@ name: Docker build
 #   jobs:
 #     build:
 #       uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v4.0.0
-#
-# Image tags: a push to the default branch gives edge, a push to another branch gives the branch name.
-# A git tag v1.2.3 gives 1.2.3, 1.2 and 1, and latest only when it is the highest stable version of the
-# repository. A pull request builds the image but never pushes it.
 #       permissions:
 #         contents: read
 #         packages: write
 #         id-token: write
+#
+# Image tags: a push to the default branch gives edge, a push to another branch gives the branch name.
+# A git tag v1.2.3 gives 1.2.3, 1.2 and 1, and latest only when it is the highest stable version of the
+# repository. A git tag that is not a version keeps its own name. A pull request never pushes.
 
 on:
   workflow_call:
@@ -183,12 +183,18 @@ jobs:
           # latest only for the highest stable version, so a fix of an older line moves only its own 1 and 1.0
           latest=false
           major_zero=false
+          other_tag=false
           if [ "$REF_TYPE" = tag ]; then
             version="${REF_NAME#v}"
             case "$version" in 0.*) major_zero=true ;; esac
+            # a git tag that is not a version, for example "stable", gets no semver tag, so it keeps its own name
+            if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+              other_tag=true
+            fi
             if printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              # an error of the tags API or an empty list leaves latest off instead of failing the release build
               highest=$(gh api --paginate "repos/$GITHUB_REPOSITORY/tags?per_page=100" --jq '.[].name' \
-                | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+                | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1) || highest=""
               if [ "$version" = "$highest" ]; then
                 latest=true
               fi
@@ -198,6 +204,7 @@ jobs:
             echo "push=$push"
             echo "latest=$latest"
             echo "major-zero=$major_zero"
+            echo "other-tag=$other_tag"
           } >> "$GITHUB_OUTPUT"
           echo "Push: $push, latest: $latest" >> "$GITHUB_STEP_SUMMARY"
 
@@ -214,6 +221,7 @@ jobs:
           tags: |
             type=edge
             type=ref,event=branch,enable={{is_not_default_branch}}
+            type=ref,event=tag,enable=${{ steps.plan.outputs.other-tag == 'true' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}},enable=${{ steps.plan.outputs.major-zero != 'true' }}
