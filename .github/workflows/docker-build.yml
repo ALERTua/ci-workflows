@@ -245,5 +245,6 @@ jobs:
             echo "No open pull request for $BRANCH, no comment"
             exit 0
           fi
-          gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" \
+          # a review of the type COMMENT, not a plain comment: tools that follow a pull request watch its reviews
+          gh pr review "$pr" --repo "$GITHUB_REPOSITORY" --comment \
             --body "Docker build \`$TARGET\`: $RESULT on ${BUILDER:-?}, build step ${SECONDS_SPENT:-?} s. [Run]($RUN_URL)"
