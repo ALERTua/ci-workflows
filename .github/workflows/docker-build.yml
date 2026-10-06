@@ -1,0 +1,192 @@
+name: Docker build
+
+# Builds the Docker image of the caller repository and pushes it to ghcr.io.
+# The build runs on buildkit of alert-server when buildkit answers through the tailnet,
+# otherwise on this GitHub-hosted runner with the GitHub Actions cache.
+# The job joins the tailnet with the GitHub OIDC token (Tailscale workload identity
+# federation), so no repository needs a secret.
+#
+# Caller:
+#   jobs:
+#     build:
+#       uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v2
+#       permissions:
+#         contents: read
+#         packages: write
+#         id-token: write
+
+on:
+  workflow_call:
+    inputs:
+      target:
+        description: Dockerfile stage to build. Empty builds the last stage.
+        type: string
+        default: ""
+      suffix:
+        description: Suffix for each image tag, for example -cuda
+        type: string
+        default: ""
+      prepare:
+        description: Shell commands that run after the checkout and before the build
+        type: string
+        default: ""
+      free-disk-space:
+        description: Remove big unused tools from the GitHub-hosted runner before a build on it
+        type: boolean
+        default: false
+      latest-on-default-branch:
+        description: Tag each push to the default branch as latest. A release tag always gets latest.
+        type: boolean
+        default: true
+      context:
+        description: Build context path
+        type: string
+        default: .
+      alert-server:
+        description: Build on buildkit of alert-server when it answers. False always builds on the GitHub-hosted runner.
+        type: boolean
+        default: true
+    outputs:
+      builder:
+        description: Where the image was built, alert-server or github
+        value: ${{ jobs.build.outputs.builder }}
+
+permissions: {}
+
+env:
+  # Tailscale workload identity federation: identifiers, not secrets
+  TS_CLIENT_ID: TAys5tptfH11CNTRL-k82Za2AL4a11CNTRL
+  TS_AUDIENCE: api.tailscale.com/TAys5tptfH11CNTRL-k82Za2AL4a11CNTRL
+  # buildkit on alert-server; the tailnet policy gives tag:github-ci only this port
+  BUILDKIT_HOST: 100.76.242.86
+  BUILDKIT_PORT: "1234"
+
+jobs:
+  build:
+    name: Build the image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout of the caller repository
+      packages: write # push of the image to ghcr.io
+      id-token: write # Tailscale accepts the GitHub OIDC token instead of a key
+    outputs:
+      builder: ${{ steps.result.outputs.builder }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # the build context must not carry the GitHub token
+          persist-credentials: false
+
+      - name: Join the tailnet without a key
+        id: tailscale
+        # Code of a pull request from a fork never reaches alert-server. Forks get no OIDC
+        # token, and pull_request_target and workflow_run run with the rights of this
+        # repository, so they skip alert-server explicitly.
+        if: >-
+          inputs.alert-server &&
+          github.event.pull_request.head.repo.fork != true &&
+          github.event_name != 'pull_request_target' &&
+          github.event_name != 'workflow_run'
+        continue-on-error: true
+        timeout-minutes: 3
+        uses: tailscale/github-action@d1b6cd204f8dceda5b3eaad7f1f767be390056cd # v4.2.0
+        with:
+          oauth-client-id: ${{ env.TS_CLIENT_ID }}
+          audience: ${{ env.TS_AUDIENCE }}
+          tags: tag:github-ci
+
+      - name: Check whether buildkit on alert-server answers
+        id: probe
+        if: steps.tailscale.outcome == 'success'
+        run: |
+          # the tailnet route can need a few seconds after the join
+          if timeout 15 bash -c 'until (exec 3<>"/dev/tcp/$BUILDKIT_HOST/$BUILDKIT_PORT") 2>/dev/null; do sleep 1; done'; then
+            echo "answers=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "buildkit on alert-server does not answer, the build runs on this runner"
+          fi
+
+      - name: Use buildkit on alert-server
+        id: remote
+        if: steps.probe.outputs.answers == 'true'
+        continue-on-error: true
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+        with:
+          driver: remote
+          endpoint: tcp://${{ env.BUILDKIT_HOST }}:${{ env.BUILDKIT_PORT }}
+
+      - name: Use a builder on this runner
+        if: steps.remote.outcome != 'success'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Record the builder
+        id: result
+        env:
+          REMOTE: ${{ steps.remote.outcome == 'success' }}
+          CACHE_SCOPE: ${{ inputs.target || 'default' }}
+        run: |
+          # buildkit on alert-server keeps its own layer cache; the GitHub cache is only for this runner
+          if [ "$REMOTE" = "true" ]; then
+            builder=alert-server
+            cache_from=""
+            cache_to=""
+          else
+            builder=github
+            cache_from="type=gha,scope=$CACHE_SCOPE"
+            cache_to="type=gha,mode=max,scope=$CACHE_SCOPE"
+          fi
+          {
+            echo "builder=$builder"
+            echo "cache-from=$cache_from"
+            echo "cache-to=$cache_to"
+          } >> "$GITHUB_OUTPUT"
+          echo "Builder: $builder" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Free disk space for the build on this runner
+        if: inputs.free-disk-space && steps.result.outputs.builder == 'github'
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Prepare the build context
+        if: inputs.prepare != ''
+        env:
+          PREPARE: ${{ inputs.prepare }}
+        run: eval "$PREPARE"
+
+      - name: Generate Docker metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # latest=auto adds latest for a release tag
+          flavor: |
+            latest=auto
+            suffix=${{ inputs.suffix }},onlatest=true
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ inputs.latest-on-default-branch && '{{is_default_branch}}' || 'false' }}
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build, and push unless the run is for a pull request
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.context }}
+          target: ${{ inputs.target }}
+          push: ${{ github.event_name != 'pull_request' }}
+          # attach build provenance and an SBOM to each pushed image
+          provenance: ${{ github.event_name != 'pull_request' && 'mode=max' || 'false' }}
+          sbom: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: ${{ steps.result.outputs.cache-from }}
+          cache-to: ${{ steps.result.outputs.cache-to }}

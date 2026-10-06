@@ -31,6 +31,8 @@ on:
         description: JSON value for runs-on, use it with fromJson
         value: ${{ jobs.pick.outputs.runner }}
 
+permissions: {}
+
 env:
   # Tailscale workload identity federation: identifiers, not secrets
   TS_CLIENT_ID: TAys5tptfH11CNTRL-k82Za2AL4a11CNTRL
@@ -40,11 +42,11 @@ env:
 
 jobs:
   pick:
+    name: Pick the runner
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      # Tailscale accepts the GitHub OIDC token instead of a key
-      id-token: write
+      id-token: write # Tailscale accepts the GitHub OIDC token instead of a key
     outputs:
       runner: ${{ steps.pick.outputs.runner }}
     steps:
