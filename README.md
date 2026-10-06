@@ -32,7 +32,7 @@ concurrency:
 
 jobs:
   build:
-    uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v2
+    uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v2.0.0
     permissions:
       contents: read
       packages: write
@@ -51,7 +51,7 @@ jobs:
             suffix: ""
           - target: cuda
             suffix: "-cuda"
-    uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v2
+    uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v2.0.0
     permissions:
       contents: read
       packages: write
@@ -75,11 +75,28 @@ jobs:
 
 The output `builder` is `alert-server` or `github`.
 
+The optional secret `pr-comment-token` turns on a comment with the build result on the open pull request of the branch, for example `Docker build cpu: success on alert-server, build step 14 s`. A tool that follows the pull request then learns that the build ended. Without the secret, the workflow writes no comment. The caller passes its own token and gives it `pull-requests: write`:
+
+```yaml
+jobs:
+  build:
+    uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v2.0.0
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      pull-requests: write
+    secrets:
+      pr-comment-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+The comment is a secret and not an input, because GitHub checks the permissions of a job before its `if` condition. A caller without the comment then needs no `pull-requests: write`.
+
 Tags of the image: the branch name, the git tag name, and for a semantic version tag `1.2.3`, `1.2` and `1`. A pull request run builds the image but does not push it.
 
 These conditions must stay true:
 
-- The Tailscale trust credential trusts the subject `repo:ALERTua/*` and gives `tag:github-ci`.
+- The Tailscale trust credential has the subject `repo:*` and the custom claim `repository_owner_id` = `8375129`, and gives `tag:github-ci`. GitHub gives older repositories the subject `repo:ALERTua/<repository>:...` and newer ones the immutable subject `repo:ALERTua@8375129/<repository>@<id>:...`, so the credential matches the account number, not the account name.
 - The tailnet policy gives `tag:github-ci` only `tcp:1234` on alert-server.
 - buildkit on alert-server listens on `100.76.242.86:1234`.
 

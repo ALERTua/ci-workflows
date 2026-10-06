@@ -9,7 +9,7 @@ name: Docker build
 # Caller:
 #   jobs:
 #     build:
-#       uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v2
+#       uses: ALERTua/ci-workflows/.github/workflows/docker-build.yml@v2.0.0
 #       permissions:
 #         contents: read
 #         packages: write
@@ -46,6 +46,13 @@ on:
         description: Build on buildkit of alert-server when it answers. False always builds on the GitHub-hosted runner.
         type: boolean
         default: true
+    secrets:
+      pr-comment-token:
+        description: >-
+          GITHUB_TOKEN of the caller with pull-requests write. When given, the job comments the build result
+          on the open pull request of the branch. A secret, not an input, because GitHub checks the permissions
+          of a job before its if condition, so a caller without this comment must not need pull-requests write.
+        required: false
     outputs:
       builder:
         description: Where the image was built, alert-server or github
@@ -177,7 +184,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Record the start of the build
+        id: start
+        run: echo "epoch=$(date +%s)" >> "$GITHUB_OUTPUT"
+
       - name: Build, and push unless the run is for a pull request
+        id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: ${{ inputs.context }}
@@ -190,3 +202,35 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: ${{ steps.result.outputs.cache-from }}
           cache-to: ${{ steps.result.outputs.cache-to }}
+
+      # The comment tells the people and the tools that follow the pull request that the build ended.
+      # A push to a branch without an open pull request gets no comment.
+      - name: Comment the build result on the pull request
+        if: always() && steps.start.outcome == 'success'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.pr-comment-token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+          TARGET: ${{ inputs.target || 'default' }}
+          OUTCOME: ${{ steps.build.outcome }}
+          BUILDER: ${{ steps.result.outputs.builder }}
+          START: ${{ steps.start.outputs.epoch }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          seconds=$(( $(date +%s) - START ))
+          echo "Build step: ${seconds} s" >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "$GH_TOKEN" ]; then
+            echo "The caller gives no pr-comment-token, no comment"
+            exit 0
+          fi
+          pr="$PR_NUMBER"
+          if [ -z "$pr" ]; then
+            pr=$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json number --jq '.[0].number // empty')
+          fi
+          if [ -z "$pr" ]; then
+            echo "No open pull request for $BRANCH, no comment"
+            exit 0
+          fi
+          gh pr comment "$pr" --repo "$GITHUB_REPOSITORY" \
+            --body "Docker build \`$TARGET\`: $OUTCOME on $BUILDER, build step $seconds s. [Run]($RUN_URL)"
