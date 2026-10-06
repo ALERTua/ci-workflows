@@ -1,0 +1,3 @@
+# git worktrees of the agents and the files of the IDE
+.claude/
+.idea/

@@ -8,7 +8,7 @@ name: Pull request report
 #     report:
 #       needs: build
 #       if: always()
-#       uses: ALERTua/ci-workflows/.github/workflows/pr-report.yml@v3.0.0
+#       uses: ALERTua/ci-workflows/.github/workflows/pr-report.yml@v4.0.0
 #       permissions:
 #         pull-requests: write
 
@@ -32,6 +32,10 @@ jobs:
           path: results
 
       - name: Comment the results on the open pull request of the branch
+        # a pull request from a fork gets a read-only token and cannot comment
+        if: github.event.pull_request.head.repo.fork != true
+        # a failed comment must not turn the run red
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
