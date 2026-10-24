@@ -122,3 +122,30 @@ These conditions must stay true:
 - The Tailscale trust credential has the subject `repo:*` and the custom claim `repository_owner_id` = `8375129`, and gives `tag:github-ci`. GitHub gives older repositories the subject `repo:ALERTua/<repository>:...` and newer ones the immutable subject `repo:ALERTua@8375129/<repository>@<id>:...`, so the credential matches the account number, not the account name.
 - The tailnet policy gives `tag:github-ci` only `tcp:1234` on alert-server.
 - buildkit on alert-server listens on `100.76.242.86:1234`.
+
+## dependabot-merge
+
+`dependabot-merge.yml` merges a pull request of Dependabot after the checks of the caller pass. The caller runs it as a job that needs the check jobs, so the repository needs no branch protection and no auto-merge setting. By default it merges patch and minor updates with a squash. A major update, and an update without a semver type, for example a submodule commit, stay open for a person.
+
+```yaml
+on:
+  pull_request:
+
+jobs:
+  checks:
+    # the checks of the repository
+  dependabot-merge:
+    needs: checks
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    uses: ALERTua/ci-workflows/.github/workflows/dependabot-merge.yml@v4.1.0
+    permissions:
+      contents: write
+      pull-requests: write
+```
+
+| Input | Default | Meaning |
+|---|---|---|
+| `update-types` | `version-update:semver-patch version-update:semver-minor` | Space-separated update types to merge, as the `update-type` output of `dependabot/fetch-metadata` |
+| `merge-method` | `squash` | `merge`, `squash` or `rebase` |
+
+The merge uses the `GITHUB_TOKEN` of the run. GitHub starts no workflow for a push that this token makes, so the push of the merge to the default branch runs no CI and no Release Drafter. The next push of a person runs them again.

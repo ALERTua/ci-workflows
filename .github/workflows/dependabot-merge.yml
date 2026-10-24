@@ -1,0 +1,61 @@
+name: Dependabot merge
+
+# Merges a pull request of Dependabot after the checks of the caller pass.
+# The caller runs this job after its checks, so no branch protection and no auto-merge setting are needed.
+#
+# Caller, in the workflow that runs the checks on pull_request:
+#   jobs:
+#     dependabot-merge:
+#       needs: checks
+#       if: github.event.pull_request.user.login == 'dependabot[bot]'
+#       uses: ALERTua/ci-workflows/.github/workflows/dependabot-merge.yml@v4.1.0
+#       permissions:
+#         contents: write
+#         pull-requests: write
+
+on:
+  workflow_call:
+    inputs:
+      update-types:
+        description: Space-separated update types to merge, as the update-type output of dependabot/fetch-metadata
+        type: string
+        default: version-update:semver-patch version-update:semver-minor
+      merge-method:
+        description: merge, squash or rebase
+        type: string
+        default: squash
+
+permissions: {}
+
+jobs:
+  merge:
+    name: Merge the Dependabot pull request
+    # a pull request that a person opened never gets merged here
+    if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # merge of the pull request
+      pull-requests: write # merge of the pull request
+    steps:
+      - name: Read the update of the pull request
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Merge the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          UPDATE_TYPE: ${{ steps.metadata.outputs.update-type }}
+          UPDATE_TYPES: ${{ inputs.update-types }}
+          MERGE_METHOD: ${{ inputs.merge-method }}
+        run: |
+          case "$MERGE_METHOD" in
+            merge|squash|rebase) ;;
+            *) echo "::error::merge-method must be merge, squash or rebase, not '$MERGE_METHOD'"; exit 1 ;;
+          esac
+          # an update without a semver type, for example a submodule commit, stays for a person
+          if [ -z "$UPDATE_TYPE" ] || [[ " $UPDATE_TYPES " != *" $UPDATE_TYPE "* ]]; then
+            echo "Update type '$UPDATE_TYPE' is not in '$UPDATE_TYPES', no merge"
+            exit 0
+          fi
+          gh pr merge "$PR_URL" "--$MERGE_METHOD"

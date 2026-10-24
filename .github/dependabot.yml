@@ -1,9 +1,25 @@
+# https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference
 version: 2
 updates:
+  # the actions of the workflows
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: weekly
+    # a release must be 3 days old first, so a broken or hostile release can be withdrawn
+    cooldown:
+      default-days: 3
     groups:
       actions:
+        patterns: ["*"]
+
+  # the rev of each hook in .pre-commit-config.yaml
+  - package-ecosystem: pre-commit
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 3
+    groups:
+      pre-commit:
         patterns: ["*"]
