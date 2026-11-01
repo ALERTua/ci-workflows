@@ -1,0 +1,62 @@
+name: Changes
+
+# Tells whether a push changes code, so that the caller can skip its tests and builds for a push of only docs.
+# paths-ignore of the pull_request trigger looks at the whole diff of the pull request, so a later push
+# of only .md files still runs everything. This workflow compares the push with the head before it.
+#
+# Caller:
+#   jobs:
+#     changes:
+#       uses: ALERTua/ci-workflows/.github/workflows/changes.yml@v4.2.0
+#       permissions:
+#         contents: read
+#     test:
+#       needs: changes
+#       if: needs.changes.outputs.code == 'true'
+
+on:
+  workflow_call:
+    inputs:
+      ignore:
+        description: Extended regular expression. A push whose changed files all match it does not change code.
+        type: string
+        default: '\.md$'
+    outputs:
+      code:
+        description: "'false' when a later push to a pull request changes only files that match ignore, else 'true'"
+        value: ${{ jobs.changes.outputs.code }}
+
+permissions: {}
+
+jobs:
+  changes:
+    name: Look for changed code
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout of the history for the diff
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Compare the push with the head before it
+        id: diff
+        env:
+          IGNORE: ${{ inputs.ignore }}
+          ACTION: ${{ github.event.action }}
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.pull_request.head.sha }}
+        run: |
+          code=true
+          # a new pull request, a push to a branch, a tag and a manual run have no earlier head of a pull request
+          if [ "$ACTION" = "synchronize" ] && git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            files=$(git diff --name-only "$BEFORE" "$AFTER")
+            if [ -n "$files" ] && ! printf '%s\n' "$files" | grep -qvE "$IGNORE"; then
+              code=false
+            fi
+          fi
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          echo "Code changed since the previous push: $code" >> "$GITHUB_STEP_SUMMARY"
