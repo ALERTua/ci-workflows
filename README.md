@@ -123,6 +123,31 @@ These conditions must stay true:
 - The tailnet policy gives `tag:github-ci` only `tcp:1234` on alert-server.
 - buildkit on alert-server listens on `100.76.242.86:1234`.
 
+## changes
+
+`changes.yml` tells whether a push changes code, so that the caller skips its tests and builds for a push of only docs. `paths-ignore` of the `pull_request` trigger looks at the whole diff of the pull request. When a pull request already changes code, a later push of only `.md` files still runs everything. `changes.yml` compares the push with the head of the pull request before it.
+
+```yaml
+jobs:
+  changes:
+    uses: ALERTua/ci-workflows/.github/workflows/changes.yml@v4.2.0
+    permissions:
+      contents: read
+  test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    # the steps of the tests
+  build:
+    needs: test
+    # docker-build.yml as above; it is skipped when test is skipped
+```
+
+| Input | Default | Meaning |
+|---|---|---|
+| `ignore` | `\.md$` | Extended regular expression. A push whose changed files all match it does not change code. |
+
+The output `code` is `false` only for a later push to a pull request that changes only files that match `ignore`. A new pull request, a force push whose old head is gone, a push to a branch, a tag and a manual run give `true`. A skipped job does not block a merge, unless a ruleset or a branch protection requires that check.
+
 ## dependabot-merge
 
 `dependabot-merge.yml` merges a pull request of Dependabot after the checks of the caller pass. The caller runs it as a job that needs the check jobs, so the repository needs no branch protection and no auto-merge setting. By default it merges patch and minor updates with a squash. A major update, and an update without a semver type, for example a submodule commit, stay open for a person.
